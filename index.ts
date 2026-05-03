@@ -2,6 +2,7 @@
 import * as readline from "readline";
 import * as fs from "fs";
 import * as path from "path";
+import { execSync } from "child_process";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -328,6 +329,128 @@ function recordToolUse(toolName: string) {
   appendToSession(`### Tool: ${toolName}\n`);
 }
 
+async function executeTool(name: string, args: Record<string, unknown>): Promise<string> {
+  try {
+    switch (name) {
+      case "bash": {
+        const cmd = args.command as string;
+        if (!cmd) return "Error: command is required";
+        const output = execSync(cmd, { encoding: "utf8", maxBuffer: 10 * 1024 * 1024, cwd: process.cwd() });
+        return output || "(no output)";
+      }
+
+      case "read": {
+        const fp = args.filePath as string;
+        if (!fp) return "Error: filePath is required";
+        const content = safeRead(fp);
+        if (!content) return "File not found or empty";
+        const limit = args.limit as number;
+        const offset = args.offset as number;
+        if (limit || offset) {
+          const lines = content.split("\n");
+          const start = offset ? offset - 1 : 0;
+          const end = limit ? start + limit : lines.length;
+          return lines.slice(start, end).join("\n");
+        }
+        return content;
+      }
+
+      case "write": {
+        const fp = args.filePath as string;
+        const content = args.content as string;
+        if (!fp) return "Error: filePath is required";
+        if (content === undefined) return "Error: content is required";
+        fs.writeFileSync(fp, content, "utf8");
+        return `File written: ${fp}`;
+      }
+
+      case "edit": {
+        const fp = args.filePath as string;
+        const oldStr = args.oldString as string;
+        const newStr = args.newString as string;
+        if (!fp || !oldStr) return "Error: filePath and oldString are required";
+        const content = safeRead(fp);
+        if (!content) return "File not found";
+        if (!content.includes(oldStr)) return "oldString not found in file";
+        const newContent = content.replace(oldStr, newStr);
+        fs.writeFileSync(fp, newContent, "utf8");
+        return `File edited: ${fp}`;
+      }
+
+      case "grep": {
+        const pattern = args.pattern as string;
+        if (!pattern) return "Error: pattern is required";
+        const include = args.include as string;
+        const searchPath = args.path as string || process.cwd();
+        const { execSync } = require("child_process");
+        let cmd = `grep -r "${pattern}" "${searchPath}"`;
+        if (include) cmd += ` --include="${include}"`;
+        try {
+          const output = execSync(cmd, { encoding: "utf8", maxBuffer: 5 * 1024 * 1024 });
+          return output.slice(0, 5000);
+        } catch {
+          return "(no matches found)";
+        }
+      }
+
+      case "glob": {
+        const pattern = args.pattern as string;
+        if (!pattern) return "Error: pattern is required";
+        const searchPath = args.path as string || process.cwd();
+        const { execSync } = require("child_process");
+        const cmd = `find "${searchPath}" -name "${pattern}" 2>/dev/null | head -50`;
+        try {
+          return execSync(cmd, { encoding: "utf8" });
+        } catch {
+          return "(no files found)";
+        }
+      }
+
+      case "webfetch": {
+        const url = args.url as string;
+        if (!url) return "Error: url is required";
+        const format = args.format as string || "text";
+        const timeout = (args.timeout as number || 30) * 1000;
+        const res = await fetch(url, { headers: { Accept: "text/plain" }, signal: AbortSignal.timeout(timeout) });
+        if (!res.ok) return `HTTP ${res.status}`;
+        return format === "markdown" ? res.text() : res.text();
+      }
+
+      case "websearch": {
+        const query = args.query as string;
+        if (!query) return "Error: query is required";
+        const { execSync } = require("child_process");
+        const cmd = `curl -s "https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1" | head -c 3000`;
+        try {
+          return execSync(cmd, { encoding: "utf8", maxBuffer: 5 * 1024 * 1024 });
+        } catch {
+          return "(no results)";
+        }
+      }
+
+      case "todoWrite": {
+        return "todoWrite is not supported in CLI mode";
+      }
+
+      case "question": {
+        return "question is not supported in CLI mode";
+      }
+
+      case "save_memory": {
+        const content = args.content as string;
+        if (!content) return "Error: content is required";
+        const savedPath = saveMemory(content);
+        return `Memory saved to ${savedPath}`;
+      }
+
+      default:
+        return `Unknown tool: ${name}`;
+    }
+  } catch (err: any) {
+    return `Error: ${err.message}`;
+  }
+}
+
 function recordCodeBlock(code: string, language?: string) {
   if (!currentSessionId) return;
   const lang = language || "text";
@@ -597,7 +720,159 @@ function maybeSaveToolMemory(event: Extract<SSEEvent, { kind: "tool_step" }>): s
 }
 
 function requestTools(): unknown[] {
-  const tools: unknown[] = ["websearch", "webfetch"];
+  const tools: unknown[] = [
+    {
+      type: "function",
+      function: {
+        name: "bash",
+        description: "Execute shell commands in your project environment.",
+        parameters: {
+          type: "object",
+          properties: {
+            command: { type: "string", description: "The shell command to execute" },
+          },
+          required: ["command"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "read",
+        description: "Read file contents from the workspace, with optional line-range support.",
+        parameters: {
+          type: "object",
+          properties: {
+            filePath: { type: "string", description: "Path to the file to read" },
+            limit: { type: "number", description: "Maximum number of lines to read" },
+            offset: { type: "number", description: "Line number to start reading from" },
+          },
+          required: ["filePath"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "write",
+        description: "Create a new file or overwrite an existing one with provided content.",
+        parameters: {
+          type: "object",
+          properties: {
+            filePath: { type: "string", description: "Path of the file to create or overwrite" },
+            content: { type: "string", description: "Full content to write to the file" },
+          },
+          required: ["filePath", "content"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "edit",
+        description: "Modify an existing file using exact string replacement.",
+        parameters: {
+          type: "object",
+          properties: {
+            filePath: { type: "string", description: "Path to the file to edit" },
+            oldString: { type: "string", description: "Exact text to find and replace" },
+            newString: { type: "string", description: "Replacement text" },
+          },
+          required: ["filePath", "oldString", "newString"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "grep",
+        description: "Search file contents using regular expressions across the workspace.",
+        parameters: {
+          type: "object",
+          properties: {
+            pattern: { type: "string", description: "Regex pattern to search for" },
+            include: { type: "string", description: "Glob pattern to filter files (e.g. *.ts)" },
+            path: { type: "string", description: "Directory to search in" },
+          },
+          required: ["pattern"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "glob",
+        description: "Find files by glob pattern, sorted by modification time.",
+        parameters: {
+          type: "object",
+          properties: {
+            pattern: { type: "string", description: "Glob pattern (e.g. **/*.ts)" },
+            path: { type: "string", description: "Root directory to search in" },
+          },
+          required: ["pattern"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "webfetch",
+        description: "Fetch and read a web page.",
+        parameters: {
+          type: "object",
+          properties: {
+            url: { type: "string", description: "Full URL to fetch" },
+            format: { type: "string", enum: ["text", "markdown", "html"], description: "Output format" },
+            timeout: { type: "number", description: "Request timeout in seconds" },
+          },
+          required: ["url"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "websearch",
+        description: "Search the web for information.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: { type: "string", description: "Natural-language search query" },
+            numResults: { type: "number", description: "Number of results" },
+          },
+          required: ["query"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "todoWrite",
+        description: "Create and update a structured task list.",
+        parameters: {
+          type: "object",
+          properties: {
+            todos: { type: "string", description: "JSON array of tasks" },
+          },
+          required: ["todos"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "question",
+        description: "Ask the user clarifying questions before proceeding.",
+        parameters: {
+          type: "object",
+          properties: {
+            questions: { type: "string", description: "JSON array of questions" },
+          },
+          required: ["questions"],
+        },
+      },
+    },
+  ];
   if (allowMemoryTool) tools.push(SAVE_MEMORY_TOOL);
   return tools;
 }
@@ -798,10 +1073,23 @@ async function sendMessage(userText: string) {
         stopSpinner();
 
         if (event.kind === "tool_step") {
+          let result = "";
+          if (event.name && event.args) {
+            result = await executeTool(event.name, event.args as Record<string, unknown>);
+          } else {
+            result = event.result || "";
+          }
           const savedPath = maybeSaveToolMemory(event);
           const label = savedPath ? `save_memory: saved to ${shortPath(savedPath)}` : event.data;
           recordToolUse(event.name || event.data);
-          if (showTools) wr(`${D}⚙ ${label}${R}\n`);
+          if (showTools) {
+            if (event.name && event.args) {
+              wr(`${D}⚙ ${event.name}${R}: ${result.slice(0, 100)}${result.length > 100 ? "..." : ""}\n`);
+            } else {
+              wr(`${D}⚙ ${label}${R}\n`);
+            }
+          }
+          appendToSession(`\n**Result:** ${result.slice(0, 500)}\n`);
 
         } else if (event.kind === "thinking") {
           thinking += event.data;
