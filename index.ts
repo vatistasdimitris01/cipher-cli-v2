@@ -936,10 +936,94 @@ function workingDir() {
 
 // ── Banner ────────────────────────────────────────────────────────────────────
 
+const ROBOT_FRAMES = [
+  [
+    "        ╭───╮                              ",
+    "       ╭╯ ◉╰╮                             ",
+    "       │ ◉◉ │                             ",
+    "       │ · │ │                             ",
+    "       ╰─────╯  (hello!)                    ",
+    "        ┌┬┘                               ",
+  ],
+  [
+    "        ╭───╮                              ",
+    "       │◉  ◉│                             ",
+    "       │ ^◉^ │                             ",
+    "       │─────│                             ",
+    "       ╰───╯   (wave~)                    ",
+    "        └┬┘                               ",
+  ],
+  [
+    "        ╭───╮                              ",
+    "       ╭╯ ◉╰╮                             ",
+    "       │ ◉◉ │                             ",
+    "       │ · │ │                             ",
+    "       ╰─────╯                             ",
+    "       ┌──┴──┐   (ready)                  ",
+  ],
+];
+
 const ROBOT = [
   " ╔═══════════╗ ", " ║  ◉     ◉  ║ ", " ║   ·───·   ║ ",
   " ╠═══════════╣ ", " ║  CIPHER   ║ ", " ╚══╤═════╤══╝ ", "    │     │    ",
 ];
+
+const SMILE = [
+  `${O}    ╭───╮    ${R}`,
+  `${O}   │ ◉◉ │   ${R}`,
+  `${O}   │ ^^^ │   ${R}`,
+  `${O}   ╰───╯   ${R}`,
+  `${O}    └─┘    ${R}`,
+];
+
+let bannerFrame = 0;
+
+function drawWelcome() {
+  clearTerminal();
+  const W = tw();
+  const welcomeLines = [
+    `${B}╔════════════════════════════════════════╗${R}`,
+    `${B}║${R}     ${O} Cipher CLI ${VERSION} ${B}Welcome!${R}     ${B}║${R}`,
+    `${B}╚════════════════════════════════════════╝${R}`,
+    "",
+    `${B}AI-powered terminal assistant${R}`,
+    `${D}Type your message and press Enter${R}`,
+    "",
+    `${B}Commands:${R}`,
+    `${GR}/help${R}     - Show commands`,
+    `${GR}/model${R}    - Switch AI model`,
+    `${GR}/sessions${R} - Switch sessions`,
+    `${GR}/settings${R} - Open settings`,
+    `${GR}/new${R}     - New session`,
+    "",
+    `${B}Navigation:${R}`,
+    `${GR}↑↓${R} - Navigate   ${GR}Enter${R} - Select   ${GR}Esc${R} - Cancel`,
+    "",
+    `${O}Ready...${R}`,
+  ];
+
+  const maxLen = Math.max(...welcomeLines.map(l => vis(l).length));
+  const asciiCenter = Math.floor((W - maxLen - 50) / 2);
+  const botCenter = ASCII_BOT.length;
+
+  for (let i = 0; i < 30; i++) {
+    wrl();
+  }
+  readline.cursorTo(process.stdout, 0);
+
+  const frame = ROBOT_FRAMES[bannerFrame % ROBOT_FRAMES.length];
+
+  for (let r = 0; r < Math.max(welcomeLines.length, frame.length); r++) {
+    const botLine = frame[r] || " ".repeat(42);
+    const welcome = welcomeLines[r] || "";
+    const padding = Math.max(0, W - vis(botLine).length - vis(welcome).length - 4);
+    wrl(`${O}│${R}${botLine}${" ".repeat(padding)}${O}│${R}${welcome}`);
+  }
+
+  bannerFrame = (bannerFrame + 1) % ROBOT_FRAMES.length;
+  wrl();
+  wr(`${O}❯${R} `);
+}
 
 function drawBanner() {
   const W = tw(), lw = 42, rw = W - 2 - lw - 1;
@@ -1529,7 +1613,7 @@ async function runCommand(input: string, onPrompt: () => void): Promise<boolean>
       const newId = createSession();
       conversation = [];
       wrl(`${G}✓${R} New session started: ${newId}${R}\n`);
-      drawBanner();
+      drawWelcome();
       onPrompt(); return true;
     }
 
@@ -1574,6 +1658,20 @@ async function main() {
     }
   }
 
+  // Global install check
+  if (args.includes("--install")) {
+    wrl(`${B}Installing cipher globally...${R}`);
+    try {
+      execSync(`echo '#!/bin/bash
+cd "$(dirname "$0")"
+bun run index.ts "$@"' > /usr/local/bin/cipher && chmod +x /usr/local/bin/cipher`, { encoding: "utf8" });
+      wrl(`${G}✓${R} Installed! Run with: ${O}cipher${R}`);
+    } catch {
+      wrl(`${O}Failed. Try: sudo ./index.ts --install${R}`);
+    }
+    return;
+  }
+
   // Onboarding: runs before raw mode, uses regular readline
   migrateLegacyProfileIfNeeded();
   const paths = activeUserPaths();
@@ -1593,7 +1691,7 @@ async function main() {
       if (conversation.length > 0) {
         renderSessionChat();
       } else {
-        drawBanner();
+        drawWelcome();
       }
     } else {
       wrl(`${D}Session ${sessionArg} not found.${R}\n`);
@@ -1604,8 +1702,7 @@ async function main() {
         const sessionId = createSession();
         wrl(`${D}Session started: ${sessionId}${R}`);
       }
-      clearTerminal();
-      drawBanner();
+      drawWelcome();
     }
   } else {
     const activeSessionId = findIncompleteSession();
@@ -1620,16 +1717,13 @@ async function main() {
       wrl(`${D}Session started: ${sessionId}${R}\n`);
     }
 
-    clearTerminal();
-
     const prevMessages = loadSessionMessages();
     if (prevMessages.length > 0) {
       conversation = prevMessages;
       wrl(`${D} Continuing session: ${currentSessionId}${R}`);
       renderSessionChat();
     } else {
-      wrl(`${D}Session: ${currentSessionId}${R}`);
-      drawBanner();
+      drawWelcome();
     }
   }
 
